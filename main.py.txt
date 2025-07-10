@@ -1,0 +1,119 @@
+import time, datetime, os
+import board, busio
+import adafruit_bmp280, adafruit_dht
+import RPi.GPIO as GPIO
+import cv2
+import adafruit_ads1x15.ads1115 as ADS
+from adafruit_ads1x15.analog_in import AnalogIn
+from adafruit_extended_bus import ExtendedI2C as I2C
+import requests  # <-- Added for location
+
+i2c = busio.I2C(board.SCL, board.SDA)  # single I2C bus for all I2C sensors
+
+# --- Sensor Initialization ---
+time.sleep(2)
+
+
+
+# --- Sensor Initialization ---
+bmp = adafruit_bmp280.Adafruit_BMP280_I2C(i2c, address=0x76)
+dht = adafruit_dht.DHT22(board.D4)
+ads = ADS.ADS1115(i2c, address=0x48)
+ldr = AnalogIn(ads, ADS.P0)
+
+# --- HC‑SR04 Setup ---
+TRIG, ECHO = 23, 24
+GPIO.setmode(GPIO.BCM)
+GPIO.setup(TRIG, GPIO.OUT, initial=GPIO.LOW)
+GPIO.setup(ECHO, GPIO.IN)
+
+# --- Camera Setup ---
+IMAGE_DIR = "../sensor_images"
+os.makedirs(IMAGE_DIR, exist_ok=True)
+cap = cv2.VideoCapture(0)
+if not cap.isOpened():
+    raise RuntimeError("Cannot open camera")
+
+def warmup_camera(warmup_sec=2, flush_frames=10):
+    print(f"[Camera] Warm-up {warmup_sec}s, flush {flush_frames} frames...")
+    end = time.time() + warmup_sec
+    while time.time() < end: cap.read()
+    for _ in range(flush_frames): cap.read()
+
+warmup_camera()
+
+def capture_image():
+    ret, frame = cap.read()
+    if not ret: return None
+    fname = datetime.datetime.now().strftime("img_%Y%m%d_%H%M%S.jpg")
+    path = os.path.join(IMAGE_DIR, fname)
+    cv2.imwrite(path, frame)
+    return path
+
+# --- Sensor Readers ---
+def read_dht(retries=5):
+    for i in range(retries):
+        try:
+            t, h = dht.temperature, dht.humidity
+        except RuntimeError as e:
+            print(f"[DHT22] retry {i+1} err: {e}")
+            time.sleep(2); continue
+        if t is not None and h is not None: return t, h
+        time.sleep(2)
+    return None, None
+
+def read_bmp():
+    return  bmp.pressure
+
+def read_ultrasonic(timeout=0.04):
+    GPIO.output(TRIG, GPIO.LOW); time.sleep(0.05)
+    GPIO.output(TRIG, GPIO.HIGH); time.sleep(1e-5)
+    GPIO.output(TRIG, GPIO.LOW)
+    start = time.time()
+    while GPIO.input(ECHO)==0 and time.time()-start < timeout: pass
+    if GPIO.input(ECHO)==0: return None
+    t0 = time.time()
+    while GPIO.input(ECHO)==1 and time.time()-t0 < timeout: pass
+    if GPIO.input(ECHO)==1: return None
+    return round((time.time() - t0) * 17150, 2)
+
+def read_ldr():
+    raw, volt = ldr.value, ldr.voltage
+    if volt < 0.5: level = "No Light"
+    elif volt < 1.5: level = "Low Light"
+    elif volt < 2.5: level = "Medium Light"
+    else: level = "High Light"
+    return raw, volt, level
+
+# --- Location Reader ---
+def get_location():
+    print("[Location] Getting IP-based coordinates...")
+    try:
+        res = requests.get("https://ipinfo.io/", timeout=5)
+        loc = res.json().get("loc", "Unknown")
+        print(f"Location → {loc}")
+    except Exception as e:
+        print(f"[Location Error] {e}")
+
+# --- Main Loop ---
+def main():
+    try:
+        while True:
+            print("\n=== Cycle", datetime.datetime.now().isoformat(), "===")
+            t, h = read_dht()
+            print(f"DHT22 → {t:.1f}°C, {h:.1f}%" if t else "DHT22 → failed")
+            bp = read_bmp(); print(f"BMP280 →{bp:.2f} hPa")
+            dist = read_ultrasonic(); print(f"HC‑SR04 → {dist:.2f} cm" if dist else "HC‑SR04 → timeout")
+            raw, volt, lvl = read_ldr(); print(f"LDR → ADC={raw}, {volt:.2f} V → {lvl}")
+            get_location()  # <-- Location call added
+            warmup_camera(warmup_sec=1, flush_frames=5)
+            img = capture_image(); print("Camera → saved "+img if img else "Camera → failed")
+            time.sleep(5)
+    except KeyboardInterrupt:
+        print("[Exit] Stopping...")
+    finally:
+        cap.release(); GPIO.cleanup()
+        print("[Cleanup] Done.")
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,136 @@
+import os
+import time
+import datetime
+import requests
+
+from main import (
+    read_dht, read_ultrasonic, read_ldr, read_bmp,
+    capture_image
+)
+
+# --- API URLs ---
+BASE_URL = "http://144.24.116.230:8080/api/v1"
+API_DHT22 = f"{BASE_URL}/dht/add"
+API_LDR = f"{BASE_URL}/ldr/add"
+API_WATER = f"{BASE_URL}/water_level/add"
+API_BMP280 = f"{BASE_URL}/bmp/add"
+API_IMAGE = f"{BASE_URL}/image/upload"
+
+# --- ISO Timestamp (+05:30) ---
+def get_timestamp():
+    return datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=5, minutes=30))).strftime('%Y-%m-%dT%H:%M:%S')
+
+# --- Updated Location Function ---
+def get_location():
+    try:
+        response = requests.get("http://ip-api.com/json/", timeout=5)
+        data = response.json()
+        print("[Location API Response]", data)
+
+        lat = data.get("lat")
+        lon = data.get("lon")
+
+        if lat is not None and lon is not None:
+            location = f"{lat},{lon}"
+            print("[Parsed Location]", location)
+            return location
+        else:
+            raise ValueError("Latitude or Longitude not found in API response.")
+
+    except Exception as e:
+        print(f"[Location Error] {e}")
+        return "0,0"
+
+# --- POST JSON data ---
+def post_json(api_url, payload):
+    try:
+        res = requests.post(api_url, json=payload)
+        if res.status_code in [200, 201]:
+            print(f"{api_url} → Success")
+        else:
+            print(f"{api_url} → {res.status_code}: {res.text}")
+    except Exception as e:
+        print(f"{api_url} → {e}")
+
+# --- POST Multipart image + location ---
+def post_image(api_url, image_path, location):
+    try:
+        with open(image_path, 'rb') as f:
+            files = {'file': f}
+            data = {'location': location}
+            res = requests.post(api_url, files=files, data=data)
+        if res.status_code in [200, 201]:
+            print(f"[Image] Uploaded successfully.")
+        else:
+            print(f"[Image] Upload failed: {res.status_code}: {res.text}")
+    except Exception as e:
+        print(f"[Image] Upload error: {e}")
+
+# --- Main Upload Function ---
+def upload_all_data():
+    timestamp = get_timestamp()
+    location = get_location()
+
+    print(f"\n=== Upload @ {timestamp} ===")
+
+    # 1. DHT22
+    temp, hum = read_dht()
+    if temp is not None and hum is not None:
+        post_json(API_DHT22, {
+            "temperature": temp,
+            "humidity": hum,
+            "location": location,
+            "date": timestamp
+        })
+    else:
+        print("DHT22 data unavailable")
+
+    # 2. LDR
+    _, _, light_level = read_ldr()
+    if light_level:
+        post_json(API_LDR, {
+            "ldr": light_level,
+            "location": location,
+            "date": timestamp
+        })
+    else:
+        print("LDR data unavailable")
+
+    # 3. Water Level (Ultrasonic)
+    water_level = read_ultrasonic()
+    if water_level is not None:
+        post_json(API_WATER, {
+            "water_level": water_level,
+            "location": location,
+            "date": timestamp
+        })
+    else:
+        print("Ultrasonic failed")
+
+    # 4. BMP280
+    try:
+        bmp_pressure = read_bmp()
+        post_json(API_BMP280, {
+            "pressure": bmp_pressure,
+            "location": location,
+            "date": timestamp
+        })
+    except Exception as e:
+        print(f"[BMP280 Error] {e}")
+
+    # 5. Camera
+    image_path = capture_image()
+    if image_path:
+        post_image(API_IMAGE, image_path, location)
+    else:
+        print("Image capture failed")
+
+# --- Loop Every 5 Seconds ---
+if __name__ == "__main__":
+    try:
+        while True:
+            upload_all_data()
+            print("[Sleep] Waiting 5 seconds...\n")
+            time.sleep(5)
+    except KeyboardInterrupt:
+        print("[Exit] Stopped by user.")
