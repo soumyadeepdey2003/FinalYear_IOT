@@ -1,0 +1,15 @@
+# Wait until connected to network (max 30 seconds)
+for i in {1..30}; do
+    ip=$(hostname -I | awk '{print $1}')
+    if [[ $ip != "" ]]; then
+        break
+    fi
+    sleep 1
+done
+
+# Wait a bit more to ensure DNS is ready
+sleep 10
+
+# Send the email
+echo "Your Raspberry Pi IP is: $ip" | mail -s "Raspberry Pi IP Address" debraghunandan@gmail.com
+echo "Your Raspberry Pi IP is: $ip" | mail -s "Raspberry Pi IP Address" deysoumyadeep70@gmail.com
