@@ -1,7 +1,6 @@
 
 # Path to store the last known IP
 IP_FILE="/tmp/last_ip.txt"
-EMAIL="debraghunandan@gmail.com"
 EMAIL="deysoumyadeep70@gmail.com"
 
 # Get current IP
